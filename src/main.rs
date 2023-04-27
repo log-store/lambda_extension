@@ -1,18 +1,14 @@
 use std::env;
 use json::{JsonValue, object};
-use lambda_extension::{service_fn, Error, Extension, LambdaLog, LambdaLogRecord, SharedService, LambdaTelemetry, LambdaTelemetryRecord, LogBuffering};
+use lambda_extension::{service_fn, Error, Extension, LambdaLog, LambdaLogRecord, SharedService, LogBuffering};
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{Sender, channel};
 use tracing::error;
-use tracing::instrument::WithSubscriber;
 
 const ADDRESS_ENV_NAME: &str = "LOG_STORE_ADDRESS";
 
 async fn handler(logs: Vec<LambdaLog>, sender: Sender<JsonValue>) -> Result<(), Error> {
-// async fn log_handler(logs: Vec<LambdaLog>) -> Result<(), Error> {
-    println!("GOT {} LOGS", logs.len());
-
     for log in logs {
         let mut json = object! {
             "t": log.time.timestamp_millis()
@@ -69,32 +65,7 @@ async fn handler(logs: Vec<LambdaLog>, sender: Sender<JsonValue>) -> Result<(), 
             _ => (),
         }
 
-        println!("LOG: {}", json);
         sender.send(json).await?;
-    }
-
-    Ok(())
-}
-
-async fn telemetry_handler(events: Vec<LambdaTelemetry>) -> Result<(), Error> {
-    println!("GOT {} EVENTS", events.len());
-
-    for event in events {
-        match event.record {
-            LambdaTelemetryRecord::Function(record) => {
-                // do something with the function log record
-            },
-            LambdaTelemetryRecord::PlatformInitStart {
-                initialization_type: _,
-                phase: _,
-                runtime_version: _,
-                runtime_version_arn: _,
-            } => {
-                // do something with the PlatformInitStart event
-            },
-            // more types of telemetry events are available
-            _ => (),
-        }
     }
 
     Ok(())
@@ -113,12 +84,7 @@ async fn main() -> Result<(), Error> {
     let (_, log_store_address) = env::vars().find(|(k, _)| k == ADDRESS_ENV_NAME)
         .ok_or_else(|| format!("Unable to find environment variable: {}", ADDRESS_ENV_NAME))?;
 
-    println!("ADDRESS: {}", log_store_address);
-
-    let mut stream = BufWriter::new(TcpStream::connect(log_store_address).await?);
     let (sender, mut recver) = channel(1024);
-
-    println!("Connected, and channel created");
 
     let logs_processor = SharedService::new(service_fn(move |logs| {
         let sender_clone = sender.clone();
@@ -129,22 +95,34 @@ async fn main() -> Result<(), Error> {
     }));
 
     tokio::spawn(async move {
+        let stream = match TcpStream::connect(log_store_address.as_str()).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error connecting to log-store instance at {}: {}", log_store_address, e);
+                eprintln!("Logs will be written to STDOUT instead");
+                while let Some(json) = recver.recv().await {
+                    println!("{}", json);
+                }
+                return;
+            }
+        };
+
+        let mut stream = BufWriter::new(stream);
+
         while let Some(json) = recver.recv().await {
             // convert to a string
             let json_str = format!("{}\n", json);
 
-            println!("Sending log: {}", json);
-
             if let Err(e) = stream.write_all(json_str.as_bytes()).await {
-                println!("Error writing to log-store: {}", e);
+                eprintln!("Error writing to log-store: {}", e);
+                continue
             }
 
             if let Err(e) = stream.flush().await {
-                println!("Error flushing stream: {}", e);
+                eprintln!("Error flushing stream: {}", e);
+                continue
             }
         }
-
-        println!("Done with while loop");
 
         if let Err(e) = stream.shutdown().await {
             error!("Error shutting down stream: {}", e);
@@ -159,14 +137,9 @@ async fn main() -> Result<(), Error> {
     };
 
     Extension::new()
-        // .with_extension_name("log-store")
-        // .with_log_types(&["function"])
         .with_log_buffering(buffering)
         .with_logs_processor(logs_processor)
-        // .with_telemetry_processor(telemetry_processor)
         .run().await?;
-
-    println!("Extension finished!!!");
 
     Ok(())
 }

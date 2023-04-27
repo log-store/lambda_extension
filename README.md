@@ -11,6 +11,9 @@
 2. Select the log-store extension, and the most recent version
 3. Set the environment variable `LOG_STORE_ADDRESS` to your log-store instance's IP and port (usually 1234)
 
-Used to "publish" the extension: `aws lambda add-layer-version-permission --layer-name lambda_extension --version-number 18 --statement-id allOrgs --principal '*' --region 'us-east-1' --action lambda:GetLayerVersion`
-Taken from: https://github.com/axiomhq/axiom-lambda-extension/blob/main/.github/workflows/ci.yaml#L182
+Used to "publish" the extension:
+
+```
+aws lambda add-layer-version-permission --layer-name lambda_extension --version-number 18 --statement-id allOrgs --principal '*' --region 'us-east-1' --action lambda:GetLayerVersion
+```
 
